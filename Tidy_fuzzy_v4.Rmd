@@ -1,0 +1,1777 @@
+---
+title: "Tidy_fuzzy_v4"
+author: "Aleah Wong"
+date: '2023-08-25'
+output: html_document
+---
+
+```{r}
+rm(list = ls())
+.rs.restartR()
+```
+
+```{r setup, include=FALSE}
+
+# knitr::opts_chunk$set(echo = TRUE)
+
+library(plyr)
+library(tidyr)
+library(tidyverse)
+library(dplyr)
+library(rfishbase)
+sppdata<-read.csv("/Users/aleahw/Documents/Master's!!/FCB_traits_8.25.csv")
+
+```
+
+Calculation of % RDI
+This will cap out at 100% for each nutrient, for a max total of 500%
+```{r}
+#calculate the percentage of each nutrient
+sppdata$Ca_perc = sppdata$Ca_mg_100g/560*100
+sppdata$Fe_perc = sppdata$Fe_mg_100g/14.3*100
+sppdata$Se_perc = sppdata$Se_ug_100g/16.33*100
+sppdata$Zn_perc = sppdata$Zn_mg_100g/4.33*100
+sppdata$A_perc = sppdata$A_ug_100g/280*100
+sppdata$protein_perc = sppdata$Protein_g_100g/14.3*100
+sppdata$omega_perc = sppdata$Omega_g_100g/0.7*100
+
+for (i in 1:length(sppdata$Ca_perc)) {
+  ifelse(sppdata$Ca_perc[i]>100, sppdata$Ca_perc[i]<-100, sppdata$Ca_perc)
+  ifelse(sppdata$Fe_perc[i]>100, sppdata$Fe_perc[i]<-100, sppdata$Fe_perc)
+  ifelse(sppdata$Se_perc[i]>100, sppdata$Se_perc[i]<-100, sppdata$Se_perc)
+  ifelse(sppdata$Zn_perc[i]>100, sppdata$Zn_perc[i]<-100, sppdata$Zn_perc)
+  ifelse(sppdata$A_perc[i]>100, sppdata$A_perc[i]<-100, sppdata$A_perc)
+  ifelse(sppdata$protein_perc[i]>100, sppdata$protein_perc[i]<-100, sppdata$protein_perc)
+  ifelse(sppdata$omega_perc[i]>100, sppdata$omega_perc[i]<-100, sppdata$omega_perc)
+}
+
+#all NAs are 0:
+sppdata[is.na(sppdata)] <- 0
+
+sppdata$micron <- sppdata$Ca_perc+sppdata$Fe_perc+sppdata$Se_perc+sppdata$Zn_perc+sppdata$A_perc
+sppdata$macron <- sppdata$protein_perc+sppdata$omega_perc
+```
+
+```{r}
+#creating subsets of traits for MYCIN
+
+foodtraits <- sppdata[, c("species", "agg_trophic", "spatial", "temp_range_c", "pO2_min_mbar", "N_range_µmol.kg", "P_range_µmol.kg", "growth_rate_K", "max_size_cm", "feed_eff_trophic", "abs_fecundity", "micron", "macron")]
+
+foodtraits <- foodtraits[1:57,] #for some reason there were extra rows that I had to get rid of
+
+# head(foodtraits)
+
+climatetraits <- sppdata[, c("species", "rep_freq_year", "sal_range", "temp_range_c", "pO2_min_mbar", "P_range_µmol.kg", "N_range_µmol.kg", "feed_eff_trophic", "PH_sensitivity_taxa", "c_seq", "OA_buff")]
+climatetraits <- climatetraits[1:57,]
+
+# head(climatetraits)
+
+biodivtraits <- sppdata[, c("species", "lat_range_degrees", "geog_range_km2", "abs_fecundity", "growth_rate_K", "agg_trophic", "feed_eff_trophic", "bioremed", "structure")]
+biodivtraits <- biodivtraits[1:57,]
+# head(biodivtraits)
+
+```
+
+FUNCTIONS
+```{r}
+#defining triangle function with two inputs, the data and the low/mod/high value: (data, xlow)
+#xlow is xlow<-fuzzyvar[[1]], the second input into the exposure function--fuzzyvar. Which is a list like: variable <-list(c(0,0,0.5,1),c(0.5,1,2),c(1,2,3),c(2,3,1000,10000))
+
+triangle<-function(x,xx){ #(data, list)
+  a<-xx[1]
+  b<-xx[2]
+  c<-xx[3]
+  
+  temp=array(NA,length(x))
+  temp[is.na(x)]<-0 #turns NA to 0
+  temp[x<=a & !is.na(x)]=0
+  temp[x>a & x<=b & !is.na(x)]=(x[x>a & x<=b & !is.na(x)]-a)/(b-a)
+  temp[x>b & x<=c & !is.na(x)]=(c-x[x>b & x<=c & !is.na(x)])/(c-b)
+  temp[x>c & !is.na(x)]=0
+  triangle=temp
+}
+```
+
+```{r}
+#trapezoid function with two inputs
+trapezoid<-function(x,xx){ #(data, list)
+  a<-xx[1]
+  b<-xx[2]
+  c<-xx[3]
+  d<-xx[4]
+  temp=array(NA,length(x))
+  temp[is.na(x)]<-0
+  temp[x<=a & !is.na(x)]=0
+  temp[x>a & x<b & !is.na(x)]=(x[x>a & x<b & !is.na(x)]-a)/(b-a)
+  temp[x>=b & x<c & !is.na(x)]=1
+  temp[x>=c & x<d & !is.na(x)]=(d-x[x>=c & x<d & !is.na(x)])/(d-c)
+  temp[x>=d & !is.na(x)]=0
+  trapezoid=temp
+}
+```
+
+ACCUMULATION FUNCTION (MYCIN)
+#Accumulate the degree of membership associated with each level of conclusions from the rules using an algorithm called MYCIN
+
+```{r}
+#turns NA into 0
+
+MYCIN<-function(level_values){
+  n<-length(level_values)
+  for (j in 1:length(level_values)){
+    if (is.na(level_values[j]) ==TRUE ) {
+    level_values[j] <- 0
+}
+}
+  temp=level_values[1] #start with the first membership value
+  if(n>1){ #if there are multiple membership values
+    for(i in 2:n){ #start adding from the second value
+      temp=temp+level_values[i]*(1-temp) #add them according to the accumulation function
+    }
+  }
+  MYCIN=temp
+}
+
+#TEST
+# level_values <- c(0.3, 0.2, 0.5, NA)
+# a<- MYCIN(level_values)
+# a
+```
+
+FUNCTIONS for FUZZIFICATION OF VARIABLES: low, medium, high for each trait
+```{r function with four levels: low, med, high, very high}
+#Example of fuzzyvar is var<-list(c(0,0,0.5,1),c(0.5,1,2),c(1,2,3),c(2,3,1000,10000))
+
+Trait_4_levels<-function(data,fuzzyvar,wg){
+#fuzzify exposure variables  
+  xlow<-fuzzyvar[[1]] #grabs the first list, (0,0,0.5,1)
+  xmod<-fuzzyvar[[2]] #grabs the second list
+  xhigh<-fuzzyvar[[3]]
+  xvhigh<-fuzzyvar[[4]]
+  fuzzylow<-trapezoid(data,xlow)*wg #fuzzylow is now the name of the trapezoid function with the low values
+  fuzzymod<-triangle(data,xmod)*wg
+  fuzzyhigh<-triangle(data,xhigh)*wg
+  fuzzyVhigh<-trapezoid(data,xvhigh)*wg
+  Trait_4_levels<-list(fuzzylow,fuzzymod,fuzzyhigh,fuzzyVhigh)
+}
+
+```
+
+TEST
+```{r}
+fuzzyvar<-list(c(0,0,0.5,1),c(0.5,1,2),c(1,2,3),c(2,3,1000,10000))
+
+weighfactor=1
+
+print(Trait_4_levels(1, fuzzyvar, weighfactor))
+```
+
+Opposite traits:
+- aggression/trophic
+- annual fecundity
+- PH sensitivity
+- feed conversion efficiency/trophic
+
+for biodiversity traits:
+- latrange
+-geogrange
+- FecundVar
+- GrowthVar
+- AggressVar
+
+```{r}
+#four level traits that are opposite: xlow (meaning low potential) will grab the last list in each of the fuzzy variables
+
+Trait_4_levels_opp<-function(data,fuzzyvar,wg){
+#fuzzify exposure variables  
+  xlow<-fuzzyvar[[4]] #grabs the fourth list
+  xmod<-fuzzyvar[[3]] #grabs the third list
+  xhigh<-fuzzyvar[[2]]
+  xvhigh<-fuzzyvar[[1]]
+  fuzzylow<-trapezoid(data,xlow)*wg #fuzzylow is now the name of the trapezoid function with the low values
+  fuzzymod<-triangle(data,xmod)*wg
+  fuzzyhigh<-triangle(data,xhigh)*wg
+  fuzzyVhigh<-trapezoid(data,xvhigh)*wg
+  Trait_4_levels_opp<-list(fuzzylow,fuzzymod,fuzzyhigh,fuzzyVhigh)
+  
+  # Trait_4_levels_opp[is.na(Trait_4_levels)] <- 0 #turn NAs into 0
+}
+```
+
+TAXA-BASED FUNCTIONS:
+sensitivity_pH
+cseq_potential
+OAbuffer_potential
+bioremed_potential
+structure_provision
+
+```{r}
+#sensitivity to PH function 
+#1-Fish, 2-crustaceans, 3-molluscs, 4-seaweed
+# pHSenvar<- list( c(0.75, 0, 0, 0.75), c(0.25,0.25,0,0.5), c(0,0.5,0.25,0), c(0,0.25,0.75,0))
+#later gets turned into: SenpH<-sensitivity_pH(sppdata$PH_sensitivity_taxa,pHSenvar,weighfactor)
+
+sensitivity_pH<-function(taxon,fuzzyvar,wg){
+#fuzzify pH sensitivity 
+  fuzzylow<-fuzzyvar[[4]][taxon]*wg #opposite: high sensitivity list corresponds with the low potential fuzzy set
+  fuzzymod<-fuzzyvar[[3]][taxon]*wg #index the list, selecting the correct value based on which taxon the species is
+  fuzzyhigh<-fuzzyvar[[2]][taxon]*wg
+  fuzzyVhigh<-fuzzyvar[[1]][taxon]*wg
+  sensitivity_pH<-list(fuzzylow,fuzzymod,fuzzyhigh,fuzzyVhigh)
+}
+```
+
+```{r}
+#carbon sequestration potential function
+#1-Fish, 2-crustaceans, 3-molluscs, 4-seaweed
+# CseqVar <- list( c(0.75, 0.75, 0.25, 0), c(0, 0, 0.75, 0.25), c(0, 0, 0.5, 0.75), c(0, 0, 0.25, 0.5))
+#later gets turned into: Cseq <-cseq_potential(sppdata$c_seq,cseqVar,weighfactor)
+
+cseq_potential<-function(taxon,fuzzyvar,wg){
+#fuzzify
+  fuzzylow<-fuzzyvar[[1]][taxon]*wg
+  fuzzymod<-fuzzyvar[[2]][taxon]*wg
+  fuzzyhigh<-fuzzyvar[[3]][taxon]*wg
+  fuzzyVhigh<-fuzzyvar[[4]][taxon]*wg
+  cseq_potential<-list(fuzzylow,fuzzymod,fuzzyhigh,fuzzyVhigh)
+}
+```
+
+```{r}
+#OA buffering potential function
+#1-Fish, 2-crustaceans, 3-molluscs, 4-seaweed
+# OAbufferVar <- list( c(0.75, 0.75, 0.75, 0.25), c(0, 0, 0, 0.25), c(0, 0, 0, 0.75), c(0, 0, 0, 0.5))
+#later used as: OAbuffer <- OAbuffer_potential(sppdata$OA_buff,OAbufferVar,weighfactor)
+
+OAbuffer_potential<-function(taxon,fuzzyvar,wg){
+#fuzzify
+  fuzzylow<-fuzzyvar[[1]][taxon]*wg
+  fuzzymod<-fuzzyvar[[2]][taxon]*wg
+  fuzzyhigh<-fuzzyvar[[3]][taxon]*wg
+  fuzzyVhigh<-fuzzyvar[[4]][taxon]*wg
+  OAbuffer_potential<-list(fuzzylow,fuzzymod,fuzzyhigh,fuzzyVhigh)
+}
+```
+
+```{r}
+#Bioremediation potential function
+#1-Fish, 2-crustaceans, 3-molluscs, 4-seaweed
+# BioremedVar <-list(c(0.75, 0.75, 0.25, 0.25), c(0, 0, 0.5, 0.5), c(0, 0, 0.75, 0.75) ,c(0, 0, 0.25, 0.25))
+#later used as: Bioremed <- bioremed_potential(sppdata$bioremed,OAbufferVar,weighfactor)
+
+bioremed_potential<-function(taxon,fuzzyvar,wg){
+#fuzzify
+  fuzzylow<-fuzzyvar[[1]][taxon]*wg
+  fuzzymod<-fuzzyvar[[2]][taxon]*wg
+  fuzzyhigh<-fuzzyvar[[3]][taxon]*wg
+  fuzzyVhigh<-fuzzyvar[[4]][taxon]*wg
+  bioremed_potential<-list(fuzzylow,fuzzymod,fuzzyhigh,fuzzyVhigh)
+}
+```
+
+```{r}
+#Struture-providing potential function
+#1-Fish, 2-crustaceans, 3-molluscs, 4-seaweed
+# StructuralVar <- list(c(0.75, 0.75, 0.25, 0.25), c(0, 0, 0.5, 0.5), c(0, 0, 0.75, 0.75) ,c(0, 0, 0.25, 0.25))
+#later used as: structure <- structure_provision(sppdata$structure,StructuralVar,weighfactor)
+
+structure_provision<-function(taxon,fuzzyvar,wg){
+#fuzzify
+  fuzzylow<-fuzzyvar[[1]][taxon]*wg
+  fuzzymod<-fuzzyvar[[2]][taxon]*wg
+  fuzzyhigh<-fuzzyvar[[3]][taxon]*wg
+  fuzzyVhigh<-fuzzyvar[[4]][taxon]*wg
+  structure_provision<-list(fuzzylow,fuzzymod,fuzzyhigh,fuzzyVhigh)
+}
+```
+
+######################################################################################################
+
+CALCULATING LOWER, UPPER quantiles (quartiles?) for the fuzzy sets (only some traits)
+```{r}
+#I calculated quartiles for these traits: feed, temp, pO2, Nitrate, phos, growth, maturity, size, fecund, salinity, latrange and geogrange; 
+
+#some fuzzy ranges will be arbitrary or informed by other data:
+#Spatial (arbitrary); agress (based on trophic levels); micro, macro (based on RDI); repfreq (arbitrary, i created my own system); TAXA-based traits like Ph sensitivity (own system); c seq (own system); OA buffer var, bioremediation, structural provisioning
+
+#FOOD
+footraitscopy <- foodtraits
+footraitscopy[footraitscopy == 0] <- NA #omit the zeros from calculation bc they will skew results
+quants <- c(0, 0.25, 0.50, 0.75, 1)
+f_quantiles <- apply(footraitscopy[2:13] , 2 , quantile, probs = quants , na.rm = TRUE )
+
+
+#CLIMATE
+climatetraitscopy <- climatetraits
+climatetraitscopy[climatetraitscopy == 0] <- NA #omit the zeros from calculation bc they will skew results
+quants <- c(0, 0.25, 0.50, 0.75, 1)
+c_quantiles <- apply(climatetraitscopy[2:11] , 2 , quantile, probs = quants , na.rm = TRUE )
+
+#BIODIVERSITY
+biodivtraitscopy <- biodivtraits
+biodivtraitscopy[biodivtraitscopy == 0] <- NA #omit the zeros from calculation bc they will skew results
+quants <- c(0, 0.25, 0.50, 0.75, 1)
+b_quantiles <- apply(biodivtraitscopy[2:9] , 2 , quantile, probs = quants , na.rm = TRUE )
+
+```
+
+THE FUZZY SETS for each variable/trait (lists), based on quartiles
+```{r}
+#c(low), c(med), c(high), c(v high)
+#start low fuzzy sets from 0 to penalize NAs (which were converted to 0)
+
+#FOOD SECURITY Fuzzy Variables
+#Low, moderate, high, very high
+AggressVar<- list(c(1, 1, 1.5, 2.5),c(1.5, 2.5, 3.5),c(2.5, 3.5, 4.5),c(3.5, 4.5, 5, 5)) #starts at one due to known categories
+SpatialVar<-list(c(0,0,20,40),c(20,40,60),c(40,60,80),c(60,80,101,101)) #goes to 101 to include 100
+TempVar<-list(c(0, 0, 8, 12),c(8, 12, 17),c(12,17,25),c(17,25,50,50))
+pO2Var <- list(c(0,0,141,183), c(141, 183, 187), c(183,187,215), c(187,215,250,250)) 
+NitrateVar <- list(c(0,0,12,16), c(12, 16, 24), c(16,24,24.2), c(24,24.2,25,25)) 
+PhosVar <- list(c(0,0,0.9,1), c(0.9, 1, 1.5), c(1,1.5,2), c(1.5,2,2.5,2.5)) 
+GrowthVar<-list(c(0,0,0.2,0.3),c(0.2,0.3,0.5),c(0.3,0.5,2),c(0.5,2,2.5, 2.5))
+# MaturityVar<-list(c(0,0,1,2),c(1,2,3),c(2,3,9),c(3,9,10,10)) 
+SizeVar<-list(c(0,0,42,102),c(42,102,152),c(102,152,500),c(152,500,600,600))
+FeedVar<- list(c(1, 1, 1.5, 2.5),c(1.5, 2.5, 3.5),c(2.5, 3.5, 4.5),c(3.5, 4.5, 5, 5))
+FecundVar <-list(c(0, 0, 109314, 1500000),c(109314, 1500000, 3500000), c(1500000, 3500000, 47700000), c(3500000, 47700000, 50000000, 50000000))
+MicroVar <-list(c(0,0,25,50),c(25,50,100),c(75,100,120),c(100,125,500,500))
+MacroVar <-list(c(0,0,10,20),c(10,20,40),c(25,40,50),c(40,50,201,201))
+
+#CLIMATE CHANGE Fuzzy Variables
+#Low, moderate, high, very high
+RepFreqVar <-list(c(0, 0, 1, 2),c(1, 2, 3), c(2, 3, 4),  c(3, 4, 5, 5)) #once/lifetime (1), once/year (2), several/year(3), year-round(4)
+
+SalinityVar <- list(c(0, 0, 2, 3), c(2, 3, 5), c(3, 5, 28), c(5, 28, 30, 30))
+TempVar<-list(c(0, 0, 8, 12),c(8, 12, 17),c(12,17,25),c(17,25,50,50))
+pO2Var <- list(c(0,0,141,183), c(141, 183, 187), c(183,187,215), c(187,215,250,250))
+NitrateVar <- list(c(0,0,12,16), c(12, 16, 24), c(16,24,24.2), c(24,24.2,25,25))
+PhosVar <- list(c(0,0,0.9,1), c(0.9, 1, 1.5), c(1,1.5,2), c(1.5,2,2.5,2.5))
+FeedVar<- list(c(1, 1, 1.5, 2.5),c(1.5, 2.5, 3.5),c(2.5, 3.5, 4.5),c(3.5, 4.5, 5, 5))
+
+#1-Fish, 2-crustaceans, 3-molluscs, 4-seaweed
+pHSenvar<- list( c(0.75, 0, 0, 0.75), c(0.25,0.25,0,0.5), c(0,0.5,0.25,0), c(0,0.25,0.75,0)) 
+CseqVar <- list( c(0.75, 0.75, 0.25, 0), c(0, 0, 0.75, 0.25), c(0, 0, 0.5, 0.75), c(0, 0, 0.25, 0.5))
+OAbufferVar <- list( c(0.75, 0.75, 0.75, 0.25), c(0, 0, 0, 0.25), c(0, 0, 0, 0.75), c(0, 0, 0, 0.5))
+
+#BIODIVERSITY Fuzzy Variables
+#Low, moderate, high, very high
+FecundVar <-list(c(0, 0, 109314, 1500000),c(109314, 1500000, 3500000), c(1500000, 3500000, 47700000), c(3500000, 47700000, 50000000, 50000000)) 
+GrowthVar<-list(c(0,0,0.2,0.3),c(0.2,0.3,0.5),c(0.3,0.5,2),c(0.5,2,2.5, 2.5)) 
+AggressVar<-list(c(1, 1, 1.5, 2.5),c(1.5, 2.5, 3.5),c(2.5, 3.5, 4.5),c(3.5, 4.5, 5, 5))
+FeedVar<- list(c(1, 1, 1.5, 2.5),c(1.5, 2.5, 3.5),c(2.5, 3.5, 4.5),c(3.5, 4.5, 5, 5))
+LatrangeVar <-list(c(0, 0, 56, 82), c(56, 82, 196), c(82,196, 359) ,c(196, 359, 400, 400))
+GeograngeVar <-list(c(0, 0, 903879, 2000000), c(903879, 2000000, 7840540), c(2000000, 7840540, 20356868) ,c(7840540, 20356868, 20500000, 20500000))
+
+#1-Fish, 2-crustaceans, 3-molluscs, 4-seaweed
+BioremedVar <-list(c(0.75, 0.75, 0.25, 0.25), c(0, 0, 0.5, 0.5), c(0, 0, 0.75, 0.75) ,c(0, 0, 0.25, 0.25)) 
+StructuralVar <- list(c(0.75, 0.75, 0.25, 0.25), c(0, 0, 0.5, 0.5), c(0, 0, 0.75, 0.75) ,c(0, 0, 0.25, 0.25))
+```
+
+```{r}
+#set limit of 100 for spatial behavior
+for (i in 1:length(foodtraits$spatial)) {
+  ifelse(foodtraits$spatial[i]>100, foodtraits$spatial[i]<-100, foodtraits$spatial)
+}
+```
+
+```{r}
+colnames(foodtraits)
+```
+
+ANALYSIS of FOOD SECURITY TRAITS
+```{r}
+#FOOD SECURITY
+# the weighting factor
+weighfactor=0.5
+
+foodtraits$abs_fecundity<- as.numeric(foodtraits$abs_fecundity)
+str(foodtraits$abs_fecundity)
+
+foodtraits[is.na(foodtraits)] <-0
+
+food_long <- foodtraits %>% pivot_longer(!c('species'), names_to = 'variable', values_to = 'value') %>% ungroup()
+
+food_long$low <- NA
+food_long$med <- NA
+food_long$high <- NA
+food_long$vhigh <- NA
+
+#Opposite traits:
+# - aggression/trophic
+# - age at maturity
+# - feed conversion efficiency/trophic]
+
+food_long <- food_long %>% rowwise() %>% mutate(
+  low = case_when(variable == 'agg_trophic' ~ Trait_4_levels_opp(value, AggressVar, weighfactor)[1], #opp
+                  variable == 'spatial' ~ Trait_4_levels(value, SpatialVar, weighfactor)[1],
+                  variable == 'temp_range_c' ~ Trait_4_levels(value, TempVar, weighfactor)[1],
+                  variable == "pO2_min_mbar" ~ Trait_4_levels(value, pO2Var, weighfactor)[1],
+                  variable == "N_range_µmol.kg" ~ Trait_4_levels(value, NitrateVar, weighfactor)[1],
+                  variable == "P_range_µmol.kg" ~ Trait_4_levels(value, PhosVar, weighfactor)[1],
+                  variable == 'growth_rate_K' ~ Trait_4_levels(value, GrowthVar, weighfactor)[1],
+                  # variable == 'age_mat_years' ~ Trait_4_levels_opp(value, MaturityVar, weighfactor)[1], #opp
+                  variable == "max_size_cm" ~ Trait_4_levels(value, SizeVar, weighfactor)[1],
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[1], #opp
+                  variable == 'abs_fecundity' ~ Trait_4_levels(value, FecundVar, weighfactor)[1],
+                  variable == 'micron' ~ Trait_4_levels(value, MicroVar, weighfactor)[1],
+                  variable == 'macron' ~ Trait_4_levels(value, MacroVar, weighfactor)[1]),
+  
+    med = case_when(variable == 'agg_trophic' ~ Trait_4_levels_opp(value, AggressVar, weighfactor)[2], #opp
+                  variable == 'spatial' ~ Trait_4_levels(value, SpatialVar, weighfactor)[2],
+                  variable == 'temp_range_c' ~ Trait_4_levels(value, TempVar, weighfactor)[2],
+                  variable == "pO2_min_mbar" ~ Trait_4_levels(value, pO2Var, weighfactor)[2],
+                  variable == "N_range_µmol.kg" ~ Trait_4_levels(value, NitrateVar, weighfactor)[2],
+                  variable == "P_range_µmol.kg" ~ Trait_4_levels(value, PhosVar, weighfactor)[2],
+                  variable == 'growth_rate_K' ~ Trait_4_levels(value, GrowthVar, weighfactor)[2],
+                  # variable == 'age_mat_years' ~ Trait_4_levels_opp(value, MaturityVar, weighfactor)[2], #opp
+                  variable == "max_size_cm" ~ Trait_4_levels(value, SizeVar, weighfactor)[2],
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[2], #opp
+                  variable == 'abs_fecundity' ~ Trait_4_levels(value, FecundVar, weighfactor)[2], #opp
+                  variable == 'micron' ~ Trait_4_levels(value, MicroVar, weighfactor)[2],
+                  variable == 'macron' ~ Trait_4_levels(value, MacroVar, weighfactor)[2]),
+  
+    high = case_when(variable == 'agg_trophic' ~ Trait_4_levels_opp(value, AggressVar, weighfactor)[3], #opp
+                  variable == 'spatial' ~ Trait_4_levels(value, SpatialVar, weighfactor)[3],
+                  variable == 'temp_range_c' ~ Trait_4_levels(value, TempVar, weighfactor)[3],
+                  variable == "pO2_min_mbar" ~ Trait_4_levels(value, pO2Var, weighfactor)[3],
+                  variable == "N_range_µmol.kg" ~ Trait_4_levels(value, NitrateVar, weighfactor)[3],
+                  variable == "P_range_µmol.kg" ~ Trait_4_levels(value, PhosVar, weighfactor)[3],
+                  variable == 'growth_rate_K' ~ Trait_4_levels(value, GrowthVar, weighfactor)[3],
+                  # variable == 'age_mat_years' ~ Trait_4_levels_opp(value, MaturityVar, weighfactor)[3], #opp
+                  variable == "max_size_cm" ~ Trait_4_levels(value, SizeVar, weighfactor)[3],
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[3], #opp
+                  variable == 'abs_fecundity' ~ Trait_4_levels(value, FecundVar, weighfactor)[3], 
+                  variable == 'micron' ~ Trait_4_levels(value, MicroVar, weighfactor)[3],
+                  variable == 'macron' ~ Trait_4_levels(value, MacroVar, weighfactor)[3]),
+  
+    vhigh = case_when(variable == 'agg_trophic' ~ Trait_4_levels_opp(value, AggressVar, weighfactor)[4], #opp
+                  variable == 'spatial' ~ Trait_4_levels(value, SpatialVar, weighfactor)[4],
+                  variable == 'temp_range_c' ~ Trait_4_levels(value, TempVar, weighfactor)[4],
+                  variable == "pO2_min_mbar" ~ Trait_4_levels(value, pO2Var, weighfactor)[4],
+                  variable == "N_range_µmol.kg" ~ Trait_4_levels(value, NitrateVar, weighfactor)[4],
+                  variable == "P_range_µmol.kg" ~ Trait_4_levels(value, PhosVar, weighfactor)[4],
+                  variable == 'growth_rate_K' ~ Trait_4_levels(value, GrowthVar, weighfactor)[4],
+                  # variable == 'age_mat_years' ~ Trait_4_levels_opp(value, MaturityVar, weighfactor)[4], #opp
+                  variable == "max_size_cm" ~ Trait_4_levels(value, SizeVar, weighfactor)[4],
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[4], #opp
+                  variable == 'abs_fecundity' ~ Trait_4_levels(value, FecundVar, weighfactor)[4], 
+                  variable == 'micron' ~ Trait_4_levels(value, MicroVar, weighfactor)[4],
+                  variable == 'macron' ~ Trait_4_levels(value, MacroVar, weighfactor)[4])
+  
+)
+
+```
+
+```{r}
+#penalize NA (currently appears in data as 0) for "opposite traits" where a low value would result in high potential
+
+for (i in 1:nrow(food_long)) {
+  ifelse(food_long$value[i] == 0, food_long$low[i] <- 0.5, food_long$low)
+  ifelse(food_long$value[i] == 0, food_long$vhigh[i] <- 0, food_long$vhigh)
+  
+}
+```
+
+```{r}
+#ACCUMULATE THE SCORES USING MYCIN
+
+food_long2 <- food_long %>% pivot_longer(cols = c('low', 'med', 'high', 'vhigh'), names_to = 'level', values_to = 'level_val') %>% ungroup()
+
+#add the <0.2 membership clause here
+food_long2$level_val[food_long2$level_val <0.1] <- 0
+
+# food_long2$level_val[food_long2$level_val == 'NULL'] <- 9999999999
+# food_long2$level_val[is.na(food_long2$level_val)] <- 9999999999
+
+food_long2$level_val <- unlist(food_long2$level_val)
+scores <- food_long2 %>% group_by(species, level) %>% summarise(score = MYCIN(level_val))
+
+#scores has 55 rows because niloticus and mykiss are repeats
+```
+
+```{r}
+#NOW DEFUZZ to get a practical index (one number from 1 to 100), using the weighted-centroid method: 
+# **(centroid of level*membership to level)/(sum of all memberships)**
+# calculated from the average values with maximum membership of each output fuzzy membership function weighted by the membership associated with each conclusion
+
+#Defuzzification index
+defuzz<-c(0,25,75,100) #These are the midpoints (the maximum value of membership?) of low, med, high, v high
+
+#shift the dataframe back to long: species, low, high are the columns
+scores2 <- scores %>% pivot_wider(names_from = level, values_from = score)
+
+#create new index with the low, med, high etc for each species
+  for (i in 1:length(scores2$species)){
+  levels_index <- c(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  sum_memberships <- sum(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  # print(levels_index)
+  # print(sum_memberships)
+  scores2$final[i] <-sum(levels_index*defuzz)/sum_memberships #new column in scores: takes the new index and multiplies it with the defuzz index
+  
+  }
+
+#save this as food set
+# NAME<- sprintf("/Users/aleahw/Documents/Master's!!/Fuzzy/foodsecurity_scores_825.2.csv")
+# write.csv(scores2,file=NAME)
+
+```
+
+ANALYSIS OF CLIMATE CHANGE TRAITS
+ 
+```{r}
+weighfactor=0.5
+
+climate_long <- climatetraits %>% pivot_longer(!c('species'), names_to = 'variable', values_to = 'value') %>% ungroup()
+climate_long$low <- NA
+climate_long$med <- NA
+climate_long$high <- NA
+climate_long$vhigh <- NA
+
+climate_long <- climate_long %>% rowwise() %>% mutate(
+  low = case_when(variable == 'rep_freq_year' ~ Trait_4_levels(value, RepFreqVar, weighfactor)[1], 
+                  variable == 'sal_range' ~ Trait_4_levels(value, SalinityVar, weighfactor)[1],
+                  variable == 'temp_range_c' ~ Trait_4_levels(value, TempVar, weighfactor)[1],
+                  variable == "pO2_min_mbar" ~ Trait_4_levels(value, pO2Var, weighfactor)[1],
+                  variable == "N_range_µmol.kg" ~ Trait_4_levels(value, NitrateVar, weighfactor)[1],
+                  variable == "P_range_µmol.kg" ~ Trait_4_levels(value, PhosVar, weighfactor)[1],
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[1], #opp
+                  variable == 'PH_sensitivity_taxa' ~ sensitivity_pH(value, pHSenvar, weighfactor)[1], #ph sens function
+                  variable == 'c_seq' ~ cseq_potential(value, CseqVar, weighfactor)[1], #cseq function
+                  variable == 'OA_buff' ~ OAbuffer_potential(value, OAbufferVar, weighfactor)[1]), #OA buffer function
+  
+   med = case_when(variable == 'rep_freq_year' ~ Trait_4_levels(value, RepFreqVar, weighfactor)[2], 
+                  variable == 'sal_range' ~ Trait_4_levels(value, SalinityVar, weighfactor)[2],
+                  variable == 'temp_range_c' ~ Trait_4_levels(value, TempVar, weighfactor)[2],
+                  variable == "pO2_min_mbar" ~ Trait_4_levels(value, pO2Var, weighfactor)[2],
+                  variable == "N_range_µmol.kg" ~ Trait_4_levels(value, NitrateVar, weighfactor)[2],
+                  variable == "P_range_µmol.kg" ~ Trait_4_levels(value, PhosVar, weighfactor)[2],
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[2], #opp
+                  variable == 'PH_sensitivity_taxa' ~ sensitivity_pH(value, pHSenvar, weighfactor)[2], #ph sens function
+                  variable == 'c_seq' ~ cseq_potential(value, CseqVar, weighfactor)[2], #cseq function
+                  variable == 'OA_buff' ~ OAbuffer_potential(value, OAbufferVar, weighfactor)[2]), #OA buffer function 
+  
+  high = case_when(variable == 'rep_freq_year' ~ Trait_4_levels(value, RepFreqVar, weighfactor)[3], 
+                  variable == 'sal_range' ~ Trait_4_levels(value, SalinityVar, weighfactor)[3],
+                  variable == 'temp_range_c' ~ Trait_4_levels(value, TempVar, weighfactor)[3],
+                  variable == "pO2_min_mbar" ~ Trait_4_levels(value, pO2Var, weighfactor)[3],
+                  variable == "N_range_µmol.kg" ~ Trait_4_levels(value, NitrateVar, weighfactor)[3],
+                  variable == "P_range_µmol.kg" ~ Trait_4_levels(value, PhosVar, weighfactor)[3],
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[3], #opp
+                  variable == 'PH_sensitivity_taxa' ~ sensitivity_pH(value, pHSenvar, weighfactor)[3], #ph sens function
+                  variable == 'c_seq' ~ cseq_potential(value, CseqVar, weighfactor)[3], #cseq function
+                  variable == 'OA_buff' ~ OAbuffer_potential(value, OAbufferVar, weighfactor)[3]), #OA buffer function  
+  
+    vhigh = case_when(variable == 'rep_freq_year' ~ Trait_4_levels(value, RepFreqVar, weighfactor)[4], 
+                  variable == 'sal_range' ~ Trait_4_levels(value, SalinityVar, weighfactor)[4],
+                  variable == 'temp_range_c' ~ Trait_4_levels(value, TempVar, weighfactor)[4],
+                  variable == "pO2_min_mbar" ~ Trait_4_levels(value, pO2Var, weighfactor)[4],
+                  variable == "N_range_µmol.kg" ~ Trait_4_levels(value, NitrateVar, weighfactor)[4],
+                  variable == "P_range_µmol.kg" ~ Trait_4_levels(value, PhosVar, weighfactor)[4],
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[4], #opp
+                  variable == 'PH_sensitivity_taxa' ~ sensitivity_pH(value, pHSenvar, weighfactor)[4], #ph sens function
+                  variable == 'c_seq' ~ cseq_potential(value, CseqVar, weighfactor)[4], #cseq function
+                  variable == 'OA_buff' ~ OAbuffer_potential(value, OAbufferVar, weighfactor)[4]) #OA buffer function
+  
+)
+
+#penalize NA (currently appears in data as 0) for "opposite traits" where a low value would result in high potential
+
+for (i in 1:nrow(climate_long)) {
+  ifelse(climate_long$value[i] == 0, climate_long$low[i] <- 0.5, climate_long$low)
+  ifelse(climate_long$value[i] == 0, climate_long$vhigh[i] <- 0, climate_long$vhigh)
+  
+}
+
+#ACCUMULATE THE SCORES USING MYCIN
+
+climatelong2 <- climate_long %>% pivot_longer(cols = c('low', 'med', 'high', 'vhigh'), names_to = 'level', values_to = 'level_val') %>% ungroup()
+
+# food_long2$level_val[food_long2$level_val == 'NULL'] <- 9999999999
+# food_long2$level_val[is.na(food_long2$level_val)] <- 9999999999
+
+climatelong2$level_val[climatelong2$level_val <0.1] <- 0
+
+climatelong2$level_val <- unlist(climatelong2$level_val)
+scores <- climatelong2 %>% group_by(species, level) %>% summarise(score = MYCIN(level_val))
+
+#scores has 55 rows because niloticus and mykiss are repeats
+
+#NOW DEFUZZ to get a practical index (one number from 1 to 100), using the weighted-centroid method: 
+# **(centroid of level*membership to level)/(sum of all memberships)**
+# calculated from the average values with maximum membership of each output fuzzy membership function weighted by the membership associated with each conclusion
+
+#Defuzzification index
+defuzz<-c(0,25,75,100) #These are the midpoints (the maximum value of membership?) of low, med, high, v high
+
+#shift the dataframe back to long: species, low, high are the columns
+scores2 <- scores %>% pivot_wider(names_from = level, values_from = score)
+
+#create new index with the low, med, high etc for each species
+  for (i in 1:length(scores2$species)){
+  levels_index <- c(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  sum_memberships <- sum(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  # print(levels_index)
+  # print(sum_memberships)
+  scores2$final[i] <-sum(levels_index*defuzz)/sum_memberships #new column in scores: takes the new index and multiplies it with the defuzz index
+  
+  }
+
+#save this as climate set
+NAME<- sprintf("/Users/aleahw/Documents/Master's!!/Fuzzy/climate_scores_825.2.csv")
+write.csv(scores2,file=NAME)
+
+```
+
+ANALYSIS OF BIODIVERSITY TRAITS
+
+```{r}
+weighfactor=0.5
+
+biodiv_long <- biodivtraits %>% pivot_longer(!c('species'), names_to = 'variable', values_to = 'value') %>% ungroup()
+biodiv_long$low <- NA
+biodiv_long$med <- NA
+biodiv_long$high <- NA
+biodiv_long$vhigh <- NA
+
+biodiv_long <- biodiv_long %>% rowwise() %>% mutate(
+  low = case_when(variable == 'lat_range_degrees' ~ Trait_4_levels_opp(value, LatrangeVar, weighfactor)[1], #opp
+                  variable == 'geog_range_km2' ~ Trait_4_levels_opp(value, GeograngeVar, weighfactor)[1], #opp
+                  variable == 'abs_fecundity' ~ Trait_4_levels_opp(value, FecundVar, weighfactor)[1], #opp
+                  variable == "growth_rate_K" ~ Trait_4_levels_opp(value, GrowthVar, weighfactor)[1], #opp
+                  variable == "agg_trophic" ~ Trait_4_levels_opp(value, AggressVar, weighfactor)[1], #opp
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[1], #opp
+                  variable == 'bioremed' ~ bioremed_potential(value, BioremedVar, weighfactor)[1], #bioremed function
+                  variable == 'structure' ~ structure_provision(value, StructuralVar, weighfactor)[1]), #structure function
+
+  med = case_when(variable == 'lat_range_degrees' ~ Trait_4_levels_opp(value, LatrangeVar, weighfactor)[2], #opp
+                  variable == 'geog_range_km2' ~ Trait_4_levels_opp(value, GeograngeVar, weighfactor)[2], #opp
+                  variable == 'abs_fecundity' ~ Trait_4_levels_opp(value, FecundVar, weighfactor)[2], #opp
+                  variable == "growth_rate_K" ~ Trait_4_levels_opp(value, GrowthVar, weighfactor)[2], #opp
+                  variable == "agg_trophic" ~ Trait_4_levels_opp(value, AggressVar, weighfactor)[2], #opp
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[2], #opp
+                  variable == 'bioremed' ~ bioremed_potential(value, BioremedVar, weighfactor)[2], #bioremed function
+                  variable == 'structure' ~ structure_provision(value, StructuralVar, weighfactor)[2]), #structure function
+  
+   high = case_when(variable == 'lat_range_degrees' ~ Trait_4_levels_opp(value, LatrangeVar, weighfactor)[3], #opp
+                  variable == 'geog_range_km2' ~ Trait_4_levels_opp(value, GeograngeVar, weighfactor)[3], #opp
+                  variable == 'abs_fecundity' ~ Trait_4_levels_opp(value, FecundVar, weighfactor)[3], #opp
+                  variable == "growth_rate_K" ~ Trait_4_levels_opp(value, GrowthVar, weighfactor)[3], #opp
+                  variable == "agg_trophic" ~ Trait_4_levels_opp(value, AggressVar, weighfactor)[3], #opp
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[3], #opp
+                  variable == 'bioremed' ~ bioremed_potential(value, BioremedVar, weighfactor)[3], #bioremed function
+                  variable == 'structure' ~ structure_provision(value, StructuralVar, weighfactor)[3]), #structure function
+   
+   vhigh = case_when(variable == 'lat_range_degrees' ~ Trait_4_levels_opp(value, LatrangeVar, weighfactor)[4], #opp
+                  variable == 'geog_range_km2' ~ Trait_4_levels_opp(value, GeograngeVar, weighfactor)[4], #opp
+                  variable == 'abs_fecundity' ~ Trait_4_levels_opp(value, FecundVar, weighfactor)[4], #opp
+                  variable == "growth_rate_K" ~ Trait_4_levels_opp(value, GrowthVar, weighfactor)[4], #opp
+                  variable == "agg_trophic" ~ Trait_4_levels_opp(value, AggressVar, weighfactor)[4], #opp
+                  variable == 'feed_eff_trophic' ~ Trait_4_levels_opp(value, FeedVar, weighfactor)[4], #opp
+                  variable == 'bioremed' ~ bioremed_potential(value, BioremedVar, weighfactor)[4], #bioremed function
+                  variable == 'structure' ~ structure_provision(value, StructuralVar, weighfactor)[4]) #structure function
+)
+```
+
+```{r}
+#penalize NA (currently appears in data as 0) for "opposite traits" where a low value would result in high potential. Assignment to "high" trait value will correspond with assignment to "low" biodiversity potential. Ex: if a species is missing data for growth rate, we will assign it to high growth rate so it will be classified for that trait as low biodiversity potential.
+
+for (i in 1:nrow(biodiv_long)) {
+  ifelse(biodiv_long$value[i] == 0, biodiv_long$low[i] <- 0, biodiv_long$low)
+  ifelse(biodiv_long$value[i] == 0, biodiv_long$vhigh[i] <- 0.5, biodiv_long$vhigh)
+  
+}
+```
+
+```{r}
+#ACCUMULATE THE SCORES USING MYCIN
+
+biodivlong2 <- biodiv_long %>% pivot_longer(cols = c('low', 'med', 'high', 'vhigh'), names_to = 'level', values_to = 'level_val') %>% ungroup()
+
+# food_long2$level_val[food_long2$level_val == 'NULL'] <- 9999999999
+# food_long2$level_val[is.na(food_long2$level_val)] <- 9999999999
+
+#add the <0.2 membership clause here
+biodivlong2$level_val[biodivlong2$level_val <0.1] <- 0
+
+biodivlong2$level_val <- unlist(biodivlong2$level_val)
+scores <- biodivlong2 %>% group_by(species, level) %>% summarise(score = MYCIN(level_val))
+
+#scores has 55 rows because niloticus and mykiss are repeats
+
+#NOW DEFUZZ to get a practical index (one number from 1 to 100), using the weighted-centroid method: 
+# **(centroid of level*membership to level)/(sum of all memberships)**
+# calculated from the average values with maximum membership of each output fuzzy membership function weighted by the membership associated with each conclusion
+
+#Defuzzification index
+defuzz<-c(0,25,75,100) #These are the midpoints (the maximum value of membership?) of low, med, high, v high
+
+#shift the dataframe back to long: species, low, high are the columns
+scores2 <- scores %>% pivot_wider(names_from = level, values_from = score)
+
+#create new index with the low, med, high etc for each species
+  for (i in 1:length(scores2$species)){
+  levels_index <- c(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  sum_memberships <- sum(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  # print(levels_index)
+  # print(sum_memberships)
+  scores2$final[i] <-sum(levels_index*defuzz)/sum_memberships #new column in scores: takes the new index and multiplies it with the defuzz index
+  
+  }
+
+#save this as biodiv set
+NAME<- sprintf("/Users/aleahw/Documents/Master's!!/Fuzzy/biodiv_scores_825.2.csv")
+write.csv(scores2,file=NAME)
+```
+
+```{r}
+#combine the three numbers into one dataset with some of the other columns in sppdata
+Food <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/foodsecurity_scores_825.2.csv")
+Climate <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/climate_scores_825.2.csv")
+Biodiversity <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/biodiv_scores_825.2.csv")
+
+Food$f <- Food$final
+Food <- Food[, c("species", "f")]
+
+Climate$c <- Climate$final
+Climate <- Climate[, c("species", "c")]
+
+Biodiversity$b <- Biodiversity$final
+Biodiversity <- Biodiversity[, c("species", "b")]
+
+FCB <- merge(Food, Climate, by=c("species"))
+FCB <- merge(FCB, Biodiversity, by=c("species"))
+
+sppdata2 <- sppdata[, c("species", "common_name", "category", "thousand_tons_2020")]
+
+FCB <- merge(sppdata2, FCB, by=c("species"))
+```
+
+```{r}
+#a little analysis of the results
+
+#rank by F
+FCB$rank_F<- rank(-FCB$f)
+
+#rank by c
+FCB$rank_C<- rank(-FCB$c)
+
+#rank by b
+FCB$rank_B<- rank(-FCB$b)
+
+FCB
+#save this: 
+NAME<- sprintf("/Users/aleahw/Documents/Master's!!/Fuzzy/FCB_scores_825.2.csv")
+write.csv(FCB,file=NAME)
+```
+
+SENSITIVITY ANALYSIS: BY NUMBER OF TRAITS REMOVED
+
+```{r}
+#JACK-KNIFE FOOD SECURITY traits by NUMBER of traits----needs to be random removal
+
+for (z in 1:50){ #do this loop 50 times for 50 trials
+  
+  #initialize dataframe with species and original score
+  orig <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/foodsecurity_scores_825.2.csv")
+  orig <- orig[, c("species", "final")]
+
+  # colnames(foodtraits)
+  #don't forget to reset the food traits code chunk (with pivot)
+
+  listt <- c("agg_trophic", "spatial", "temp_range_c", "pO2_min_mbar", "N_range_µmol.kg", "P_range_µmol.kg", "growth_rate_K", "max_size_cm", "feed_eff_trophic", "abs_fecundity", "micron", "macron")
+
+  for (i in 1:(length(listt)-1)){
+  # for (i in 2){
+    c <- sample(listt,i)
+    print(c)
+    food_long1 <- subset(food_long, !(variable %in% c))
+
+    # do something with c
+    food_long2 <- food_long1 %>% pivot_longer(cols = c('low', 'med', 'high', 'vhigh'), names_to = 'level', values_to = 'level_val') %>% ungroup()
+    
+    food_long2$level_val <- unlist(food_long2$level_val)
+    
+    print(food_long2)
+    
+    scores <- food_long2 %>% group_by(species, level) %>% summarise(score = MYCIN(level_val))
+    
+    #NOW DEFUZZ
+    defuzz<-c(0,25,75,100) #These are the midpoints (the maximum value of membership?) of low, med, high, v high
+  
+  #shift the dataframe back to long: species, low, high are the columns
+    scores2 <- scores %>% pivot_wider(names_from = level, values_from = score)
+
+  #create new index with the low, med, high etc for each species
+    for (i in 1:length(scores2$species)){
+    levels_index <- c(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+    sum_memberships <- sum(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+    # print(levels_index)
+    # print(sum_memberships)
+    scores2$final[i] <-sum(levels_index*defuzz)/sum_memberships #new column in scores: takes the new index and multiplies it with the defuzz index
+    
+    }
+
+#put the new score in a separate dataframe with columns that say how many traits were removed
+scores2 <- scores2[, c("species", "final")]
+#bind by species
+orig <- merge(orig, scores2, by=c("species"))
+}
+
+#rename columns
+# colnames(scores2)[2] ="final" #rename col?
+colnames(orig)[2] = "food"
+colnames(orig)[3] = "f-1"
+colnames(orig)[4] = "f-2"
+colnames(orig)[5] = "f-3"
+colnames(orig)[6] = "f-4"
+colnames(orig)[7] = "f-5"
+colnames(orig)[8] = "f-6"
+colnames(orig)[9] = "f-7"
+colnames(orig)[10] = "f-8"
+colnames(orig)[11] = "f-9"
+colnames(orig)[12] = "f-10"
+colnames(orig)[13] = "f-11"
+# colnames(orig)[14] = "f-12"
+
+#save this: 
+trial <- z
+NAME<- sprintf("/Users/aleahw/Documents/Master's!!/Fuzzy/F_jacknife_trials_ntraitV2/jackknife_f_number_trial_%s.csv", trial)
+write.csv(orig,file=NAME)
+  
+}
+```
+
+GRAPHING
+```{r}
+#plotting FS sensitivity by number of traits removed
+library(ggplot2)
+
+setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/F_jacknife_trials_ntraitV2")
+F_trials <- list.files("/Users/aleahw/Documents/Master's!!/Fuzzy/F_jacknife_trials_ntraitV2")
+F_trials
+
+for (i in 1) { #to initialize the new dataframe
+  name <- F_trials[i]
+  
+  trial <- read.csv(paste("/Users/aleahw/Documents/Master's!!/Fuzzy/F_jacknife_trials_ntraitV2", name, sep="/"), header = FALSE)
+  
+  colnames(trial)<-trial[1,]
+  trial<-trial[-1,]
+  colnames(trial)[3:14]<-c("zero","one","two", "three", "four","five","six","seven","eight","nine","ten","eleven")
+  
+  new_frame <-trial[, 2:14]
+  
+  library(dplyr)
+  new_frame <- new_frame %>% mutate_at(c("zero","one","two", "three", "four","five","six","seven","eight","nine","ten","eleven"), as.numeric)
+}
+
+
+#NOW ADD each trial to the new dataframe, starting with the second trial
+for (i in c(2:(length(F_trials)))) {
+  name <- F_trials[i]
+  
+  trial <- read.csv(paste("/Users/aleahw/Documents/Master's!!/Fuzzy/F_jacknife_trials_ntraitV2", name, sep="/"), header = FALSE)
+  
+  colnames(trial)<-trial[1,]
+  trial<-trial[-1,]
+  colnames(trial)[3:14]<-c("zero","one","two", "three", "four","five","six","seven","eight","nine","ten","eleven")
+  
+  #now add each one to the existing frame
+  trial_new <-trial[, 2:14]
+  trial_new <- trial_new %>% mutate_at(c("zero","one","two", "three", "four","five","six","seven","eight","nine","ten","eleven"), as.numeric)
+  
+  #add this each time to new_frame
+  # new_frame<- merge(new_frame, trial_new, by=c("species"))
+  new_frame<- bind_rows(new_frame, trial_new)
+  
+}
+
+#calculate delta F between each trait and full food security potential score
+new_frame<-as.data.frame(new_frame)
+new_frame$one <- new_frame$one-new_frame$zero
+new_frame$two <- new_frame$two-new_frame$zero
+new_frame$three <- new_frame$three-new_frame$zero
+new_frame$four <- new_frame$four-new_frame$zero
+new_frame$five <- new_frame$five-new_frame$zero
+new_frame$six <- new_frame$six-new_frame$zero
+new_frame$seven <- new_frame$seven-new_frame$zero
+new_frame$eight <- new_frame$eight-new_frame$zero
+new_frame$nine <- new_frame$nine-new_frame$zero
+new_frame$ten <- new_frame$ten-new_frame$zero
+new_frame$eleven <- new_frame$eleven-new_frame$zero
+# new_frame$twelve <- new_frame$twelve-new_frame$zero
+
+#make long
+new_frame <- new_frame[, c(1, 3:13)]
+
+new_frame <- new_frame %>% pivot_longer(!c('species'), names_to = 'n_traits_removed', values_to = 'score') %>% ungroup()
+
+plot <- ggplot(new_frame, aes(x = factor(n_traits_removed, level=c("one","two", "three", "four","five","six","seven","eight","nine","ten","eleven")), y = score)) + 
+  geom_boxplot(width = 0.5)+
+  # stat_summary(fun.y = median, geom = "line", color = "black") +
+  labs(x = "Number of Traits Removed", y = "Δ Food Security Potential") +
+  scale_x_discrete(labels = c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"))+
+  theme_classic()+
+  theme(axis.text = element_text(size = 18), 
+          axis.title = element_text(size = 20),
+          aspect.ratio = 0.8)
+
+    # theme(axis.text.x = element_text(size = 18), 
+    #       text = element_text(size = 20), axis.text = element_text(size = 8), 
+    #       aspect.ratio = 0.80, 
+    #       axis.text.y = element_text(size = 15))
+
+#SAVE
+# setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/Figures")
+# ggsave("F_ntraits_825.png", plot, height = 5, width = 8, dpi = 700)
+```
+
+```{r}
+#JACK-KNIFE CLIMATE traits by NUMBER of traits--random removal
+
+for (z in 1:50) {
+
+  #initialize dataframe with species and original score
+  orig <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/climate_scores_825.2.csv")
+  orig <- orig[, c("species", "final")]
+  
+  #don't forget to reset the climate code chunk (the one that pivots it)
+  
+  listt <- c("rep_freq_year", "sal_range", "temp_range_c", "pO2_min_mbar", "P_range_µmol.kg", "N_range_µmol.kg", "feed_eff_trophic", "PH_sensitivity_taxa", "c_seq", "OA_buff")
+  
+  for (i in 1:(length(listt)-1)){
+    c <- sample(listt,i)
+    print(c)
+    climate_long1 <- subset(climate_long, !(variable %in% c))
+  
+    # do something with c
+    climate_long2 <- climate_long1 %>% pivot_longer(cols = c('low', 'med', 'high', 'vhigh'), names_to = 'level', values_to = 'level_val') %>% ungroup()
+    
+    climate_long2$level_val <- unlist(climate_long2$level_val)
+    
+    print(climate_long2)
+    
+    scores <- climate_long2 %>% group_by(species, level) %>% summarise(score = MYCIN(level_val))
+    
+    #NOW DEFUZZ
+    defuzz<-c(0,25,75,100) #These are the midpoints (the maximum value of membership?) of low, med, high, v high
+  
+  #shift the dataframe back to long: species, low, high are the columns
+    scores2 <- scores %>% pivot_wider(names_from = level, values_from = score)
+  
+  #create new index with the low, med, high etc for each species
+    for (i in 1:length(scores2$species)){
+      levels_index <- c(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+      sum_memberships <- sum(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+      # print(levels_index)
+      # print(sum_memberships)
+      scores2$final[i] <-sum(levels_index*defuzz)/sum_memberships #new column in scores: takes the new index and multiplies it with the defuzz index
+      
+      }
+    
+  
+  #put the new score in a separate dataframe with columns that say how many traits were removed
+  scores2 <- scores2[, c("species", "final")]
+  #bind by species
+  orig <- merge(orig, scores2, by=c("species"))
+ 
+   }
+  
+  #rename columns
+  # colnames(scores2)[2] ="final" #rename col?
+  colnames(orig)[2] = "climate"
+  colnames(orig)[3] = "c-1"
+  colnames(orig)[4] = "c-2"
+  colnames(orig)[5] = "c-3"
+  colnames(orig)[6] = "c-4"
+  colnames(orig)[7] = "c-5"
+  colnames(orig)[8] = "c-6"
+  colnames(orig)[9] = "c-7"
+  colnames(orig)[10] = "c-8"
+  colnames(orig)[11] = "c-9"
+  
+  #save this: 
+  trial <- z
+  NAME<- sprintf("/Users/aleahw/Documents/Master's!!/Fuzzy/C_jacknife_trials_ntraitV2/jackknife_c_number_trial_%s.csv", trial)
+  write.csv(orig,file=NAME)
+}
+```
+
+GRAPHING C SENSITIVITY ANALYSIS--RANDOM REMOVAL (number of traits)
+```{r}
+#plotting C sensitivity by number of traits removed
+
+setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/C_jacknife_trials_ntraitV2")
+C_trials <- list.files("/Users/aleahw/Documents/Master's!!/Fuzzy/C_jacknife_trials_ntraitV2")
+C_trials
+
+for (i in 1) { #to initialize the new dataframe
+  name <- C_trials[i]
+  
+  trial <- read.csv(paste("/Users/aleahw/Documents/Master's!!/Fuzzy/C_jacknife_trials_ntraitV2", name, sep="/"), header = FALSE)
+  
+  colnames(trial)<-trial[1,]
+  trial<-trial[-1,]
+  colnames(trial)[3:12]<-c("zero", "one","two", "three", "four","five","six","seven","eight","nine")
+  new_frame <-trial[, 2:12]
+
+  new_frame <- new_frame %>% mutate_at(c("zero","one","two", "three", "four","five","six","seven","eight","nine"), as.numeric)
+  
+}
+
+#NOW ADD each trial to the new dataframe, starting with the second trial
+for (i in c(2:(length(C_trials)))) {
+  name <- C_trials[i]
+  
+  trial <- read.csv(paste("/Users/aleahw/Documents/Master's!!/Fuzzy/C_jacknife_trials_ntraitV2", name, sep="/"), header = FALSE)
+  
+  colnames(trial)<-trial[1,]
+  trial<-trial[-1,]
+  colnames(trial)[3:12]<-c("zero", "one","two", "three", "four","five","six","seven","eight","nine")
+  
+  #now add each one to the existing frame
+  trial_new <-trial[, 2:12]
+  trial_new <- trial_new %>% mutate_at(c("zero","one","two", "three", "four","five","six","seven","eight","nine"), as.numeric)
+  
+  #add this each time to new_frame
+  # new_frame<- merge(new_frame, trial_new, by=c("species"))
+  new_frame<- bind_rows(new_frame, trial_new)
+  
+}
+
+#calculate delta C between each trait and full food security potential score
+new_frame<-as.data.frame(new_frame)
+new_frame$one <- new_frame$one-new_frame$zero
+new_frame$two <- new_frame$two-new_frame$zero
+new_frame$three <- new_frame$three-new_frame$zero
+new_frame$four <- new_frame$four-new_frame$zero
+new_frame$five <- new_frame$five-new_frame$zero
+new_frame$six <- new_frame$six-new_frame$zero
+new_frame$seven <- new_frame$seven-new_frame$zero
+new_frame$eight <- new_frame$eight-new_frame$zero
+new_frame$nine <- new_frame$nine-new_frame$zero
+
+#make long
+new_frame <- new_frame[, c(1, 3:11)]
+
+new_frame <- new_frame %>% pivot_longer(!c('species'), names_to = 'n_traits_removed', values_to = 'score') %>% ungroup()
+
+#plot
+plot <- ggplot(new_frame, aes(x = factor(n_traits_removed, level=c("one","two", "three", "four","five","six","seven","eight","nine")), y = score)) + 
+  geom_boxplot(width = 0.5)+
+  stat_summary(fun.y = median,  geom = "line", color = "black") +
+  labs(x = "Number of Traits Removed", y = "Δ Climate Change Potential") +
+  scale_x_discrete(labels = c("1", "2", "3", "4", "5", "6", "7", "8", "9"))+
+  theme_classic()+
+    theme(axis.text = element_text(size = 18), 
+          axis.title = element_text(size = 18),
+          aspect.ratio = 0.8)
+
+#SAVE
+setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/Figures")
+ggsave("C_ntraits_825.png", plot, height = 5, width = 8, dpi = 700)
+```
+
+
+```{r}
+#JACK-KNIFE BIODIVERSITY traits by NUMBER of traits--random removal
+
+for (z in 1:50) {
+#initialize dataframe with species and original score
+orig <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/biodiv_scores_825.2.csv")
+orig <- orig[, c("species", "final")]
+
+#don't forget to reset the climate code chunk (the one that pivots it)
+listt <- c("lat_range_degrees", "geog_range_km2", "abs_fecundity", "growth_rate_K", "agg_trophic", "feed_eff_trophic", "bioremed", "structure")
+
+for (i in 1:(length(listt)-1)){
+  c <- sample(listt,i)
+  print(c)
+  biodiv_long1 <- subset(biodiv_long, !(variable %in% c))
+
+  # do something with c
+  biodiv_long2 <- biodiv_long1 %>% pivot_longer(cols = c('low', 'med', 'high', 'vhigh'), names_to = 'level', values_to = 'level_val') %>% ungroup()
+  
+  biodiv_long2$level_val <- unlist(biodiv_long2$level_val)
+  
+  print(biodiv_long2)
+  
+  scores <- biodiv_long2 %>% group_by(species, level) %>% summarise(score = MYCIN(level_val))
+  
+  #NOW DEFUZZ
+  defuzz<-c(0,25,75,100) #These are the midpoints (the maximum value of membership?) of low, med, high, v high
+
+#shift the dataframe back to long: species, low, high are the columns
+  scores2 <- scores %>% pivot_wider(names_from = level, values_from = score)
+
+#create new index with the low, med, high etc for each species
+  for (i in 1:length(scores2$species)){
+  levels_index <- c(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  sum_memberships <- sum(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  # print(levels_index)
+  # print(sum_memberships)
+  scores2$final[i] <-sum(levels_index*defuzz)/sum_memberships #new column in scores: takes the new index and multiplies it with the defuzz index
+  
+  }
+  
+
+#put the new score in a separate dataframe with columns that say how many traits were removed
+scores2 <- scores2[, c("species", "final")]
+#bind by species
+orig <- merge(orig, scores2, by=c("species"))
+}
+
+#rename columns
+# colnames(scores2)[2] ="final" #rename col?
+colnames(orig)[2] = "biodiv"
+colnames(orig)[3] = "b-1"
+colnames(orig)[4] = "b-2"
+colnames(orig)[5] = "b-3"
+colnames(orig)[6] = "b-4"
+colnames(orig)[7] = "b-5"
+colnames(orig)[8] = "b-6"
+colnames(orig)[9] = "b-7"
+
+#save this: 
+  trial <- z
+  NAME<- sprintf("/Users/aleahw/Documents/Master's!!/Fuzzy/B_jacknife_trials_ntraitV2/jackknife_b_number_trial_%s.csv", trial)
+  write.csv(orig,file=NAME)
+
+}
+```
+
+
+```{r}
+#plotting B sensitivity by number of traits removed
+
+setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/B_jacknife_trials_ntraitV2")
+B_trials <- list.files("/Users/aleahw/Documents/Master's!!/Fuzzy/B_jacknife_trials_ntraitV2")
+B_trials
+
+for (i in 1) { #to initialize the new dataframe
+  name <- B_trials[i]
+  
+  trial <- read.csv(paste("/Users/aleahw/Documents/Master's!!/Fuzzy/B_jacknife_trials_ntraitV2", name, sep="/"), header = FALSE)
+  
+  colnames(trial)<-trial[1,]
+  trial<-trial[-1,]
+  
+  colnames(trial)[3:10]<-c("zero", "one","two", "three", "four","five","six","seven")
+  
+  new_frame <-trial[, 2:10]
+
+  new_frame <- new_frame %>% mutate_at(c("zero","one","two", "three", "four","five","six","seven"), as.numeric)
+}  
+  
+
+#NOW ADD each trial to the new dataframe, starting with the second trial
+for (i in c(2:(length(B_trials)))) {
+  name <- B_trials[i]
+  
+  trial <- read.csv(paste("/Users/aleahw/Documents/Master's!!/Fuzzy/B_jacknife_trials_ntraitV2", name, sep="/"), header = FALSE)
+  
+  colnames(trial)<-trial[1,]
+  trial<-trial[-1,]
+  
+  colnames(trial)[3:10]<-c("zero", "one","two", "three", "four","five","six","seven")
+  
+  #now add each one to the existing frame
+  trial_new <-trial[, 2:10]
+  trial_new <- trial_new %>% mutate_at(c("zero","one","two", "three", "four","five","six","seven"), as.numeric)
+  
+  #add this each time to new_frame
+  # new_frame<- merge(new_frame, trial_new, by=c("species"))
+  new_frame<- bind_rows(new_frame, trial_new)
+  
+}
+
+#calculate delta C between each trait and full food security potential score
+new_frame<-as.data.frame(new_frame)
+new_frame$one <- new_frame$one-new_frame$zero
+new_frame$two <- new_frame$two-new_frame$zero
+new_frame$three <- new_frame$three-new_frame$zero
+new_frame$four <- new_frame$four-new_frame$zero
+new_frame$five <- new_frame$five-new_frame$zero
+new_frame$six <- new_frame$six-new_frame$zero
+new_frame$seven <- new_frame$seven-new_frame$zero
+
+#make long
+new_frame <- new_frame[, c(1, 3:9)]
+
+new_frame <- new_frame %>% pivot_longer(!c('species'), names_to = 'n_traits_removed', values_to = 'score') %>% ungroup()
+
+#plot
+plot <- ggplot(new_frame, aes(x = factor(n_traits_removed, level=c("one","two", "three", "four","five","six","seven")), y = score)) + 
+  geom_boxplot(width = 0.5)+
+  stat_summary(fun.y = median,  geom = "line", color = "black") +
+  labs(x = "Number of Traits Removed", y = "Δ Biodiversity Potential") +
+  scale_x_discrete(labels = c("1", "2", "3", "4", "5", "6", "7"))+
+  theme_classic()+
+      theme(axis.text = element_text(size = 18), 
+          axis.title = element_text(size = 20),
+          aspect.ratio = 0.8)
+
+#SAVE
+setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/Figures")
+ggsave("B_ntraits_825.png", plot, height = 5, width = 8, dpi = 700)
+```
+
+################################################################################################
+SENSITIVITY ANALYSIS: BY INDIVIDUAL TRAITS
+
+```{r}
+#JACKNIFE FOOD SECURITY by individual traits
+
+#initialize dataframe with species and original score
+orig <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/foodsecurity_scores_825.2.csv")
+orig <- orig[, c("species", "final")]
+
+listt <- c("agg_trophic", "spatial", "temp_range_c", "pO2_min_mbar", "N_range_µmol.kg", "P_range_µmol.kg", "growth_rate_K", "max_size_cm", "feed_eff_trophic", "abs_fecundity", "micron", "macron")
+
+for (i in 1:length(listt)){
+  a <- listt[i]
+  print(a)
+  food_long1 <- food_long[food_long$variable !=a, ] #removes the first trait in listt
+  
+  foodlong2 <- food_long1 %>% pivot_longer(cols = c('low', 'med', 'high', 'vhigh'), names_to = 'level', values_to = 'level_val') %>% ungroup()
+  
+  foodlong2$level_val <- unlist(foodlong2$level_val)
+  
+  print(foodlong2)
+  
+  scores <- foodlong2 %>% group_by(species, level) %>% summarise(score = MYCIN(level_val))
+  
+  #NOW DEFUZZ
+  defuzz<-c(0,25,75,100) #These are the midpoints (the maximum value of membership?) of low, med, high, v high
+
+#shift the dataframe back to long: species, low, high are the columns
+  scores2 <- scores %>% pivot_wider(names_from = level, values_from = score)
+
+#create new index with the low, med, high etc for each species
+  for (i in 1:length(scores2$species)){
+  levels_index <- c(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  sum_memberships <- sum(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  # print(levels_index)
+  # print(sum_memberships)
+  scores2$final[i] <-sum(levels_index*defuzz)/sum_memberships #new column in scores: takes the new index and multiplies it with the defuzz index
+  
+  }
+
+#put the new score in a separate dataframe with columns that say how many traits were removed
+scores2 <- scores2[, c("species", "final")]
+#bind by species
+orig <- merge(orig, scores2, by=c("species"))
+
+
+#put the missing trait back in! reset
+food_long <- food_long
+
+}
+
+#rename columns
+# colnames(scores2)[2] ="final" #rename col?
+colnames(orig)[2] = "food"
+colnames(orig)[3] = "f-agg_trophic"
+colnames(orig)[4] = "f-spatial"
+colnames(orig)[5] = "f-temp_range_c"
+colnames(orig)[6] = "f-pO2_min_mbar"
+colnames(orig)[7] = "f-N_range_µmol.kg"
+colnames(orig)[8] = "f-P_range_µmol.kg"
+colnames(orig)[9] = "f-growth_rate_K"
+# colnames(orig)[10] = "f-age_mat_years"
+colnames(orig)[10] = "f-max_size_cm"
+colnames(orig)[11] = "f-feed_eff_trophic"
+colnames(orig)[12] = "f-abs_fecundity"
+colnames(orig)[13] = "f-micron"
+colnames(orig)[14] = "f-macron"
+
+#save this: 
+NAME<- sprintf("/Users/aleahw/Documents/Master's!!/Fuzzy/jackknife_f_trait_825.csv")
+write.csv(orig,file=NAME)
+```
+
+
+```{r}
+#plotting FS sensitivity by individual trait
+
+dat <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/jackknife_f_trait_825.csv")
+
+#calculate delta F between each trait and full food security potential score
+dat<-as.data.frame(dat)
+
+dat$delta_agg_trophic <- dat$f.agg_trophic-dat$food
+dat$delta_f.spatial <- dat$f.spatial-dat$food
+dat$delta_f.temp_range_c <- dat$f.temp_range_c-dat$food
+
+dat$delta_f.pO2_min_mbar <- dat$f.pO2_min_mbar-dat$food
+dat$delta_f.N_range_µmol.kg <- dat$f.N_range_µmol.kg-dat$food
+dat$delta_f.P_range_µmol.kg <- dat$f.P_range_µmol.kg-dat$food
+dat$delta_f.growth_rate_K <- dat$f.growth_rate_K-dat$food
+# dat$delta_f.age_mat_years <- dat$f.age_mat_years-dat$food
+
+dat$delta_f.max_size_cm <- dat$f.max_size_cm-dat$food
+dat$delta_f.feed_eff_trophic <- dat$f.feed_eff_trophic-dat$food
+dat$delta_f.abs_fecundity <- dat$f.abs_fecundity-dat$food
+dat$delta_f.micron <- dat$f.micron-dat$food
+dat$delta_f.macron <- dat$f.macron-dat$food
+
+dat <- dat[, c(2, 16:27)]
+
+
+dat_long <- dat %>% pivot_longer(!c('species'), names_to = 'trait_removed', values_to = 'score') %>% ungroup()
+
+#plot
+library(ggplot2)
+ggplot(dat_long, aes(x = trait_removed, y = score)) +
+  geom_boxplot()
+
+#violin plot
+
+# plot <- ggplot(dat_long, aes(x = trait_removed, y = score)) +
+#     geom_hline(yintercept=0, linetype="solid", color = "black", size=0.3)+
+#     geom_violin(fill = "red3")+
+#       stat_summary(fun.y = median,  geom = "point", color = "black")+
+# 
+#       # stat_summary(fun = mean_sdl, geom="pointrange", width=0.2)
+# 
+#     labs(x = "Trait Removed", y = "Δ Food Security Potential") +
+#     scale_x_discrete(labels = c("Trophic Level (aggression)", "Spatial Behavior", "Temp Range", "pO2 Range", "N Range", "P Range", "Growth Rate", "Max Length", "Trophic Level (feed efficiency)", "Absolute Fecundity", "Micronutrients", "Macronutrients"))+
+#     theme_classic() +
+#     theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+#           axis.title.x = element_text(vjust=20, hjust = 1.4),
+#           text = element_text(size = 15), axis.text = element_text(size = 8),
+#           aspect.ratio = 0.80)
+
+plot <- ggplot(dat_long, aes(x = trait_removed, y = score)) +
+    geom_hline(yintercept=0, linetype="solid", color = "black", size=0.3)+
+    geom_violin(fill = "red3")+
+      stat_summary(fun.y = median,  geom = "point", color = "black")+
+
+      # stat_summary(fun = mean_sdl, geom="pointrange", width=0.2)
+
+    labs(x = "Trait Removed", y = "Δ Food Security Potential") +
+    scale_x_discrete(labels = c("B", "A", "E", "G", "I", "J", "K", "L", "O", "P", "S", "U"))+
+    theme_classic() +
+    theme(axis.text.x = element_text(size = 18),
+          text = element_text(size = 20), axis.text = element_text(size = 8),
+          aspect.ratio = 0.80,
+          axis.text.y = element_text(size = 15))
+
+# setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/Figures")
+# ggsave("F_traitsremoved_825.png", plot, height = 5, width = 8, dpi = 700)
+```
+
+
+```{r}
+#overlay boxplot on violin--find range for 25-75 percentiles
+
+#TEST F: most deviations within 5 index points
+ggplot(dat_long, aes(x = trait_removed, y = score)) +
+    geom_hline(yintercept=0, linetype="solid", color = "lightblue", size=1)+
+    geom_violin(fill = "red")+
+    geom_boxplot(width = 0.2)+
+
+
+      # stat_summary(fun = median, geom="pointrange", width=0.1)+
+
+    labs(x = "Trait Removed", y = "Δ Food Security Potential") +
+    scale_x_discrete(labels = c("B", "A", "E", "G", "I", "J", "K", "L", "O", "P", "S", "U"))+
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+          axis.title.x = element_text(vjust=20, hjust = 1.4),
+          text = element_text(size = 15), axis.text = element_text(size = 8),
+          aspect.ratio = 0.80)
+# 
+# 
+# setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/Figures")
+# ggsave("F_traits_NEW.png", plot, height = 5, width = 8, dpi = 700)
+
+```
+
+
+```{r}
+#JACKNIFE CLIMATE CHANGE by individual traits
+
+#initialize dataframe with species and original score
+orig <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/climate_scores_825.2.csv")
+orig <- orig[, c("species", "final")]
+
+listt <- c("rep_freq_year", "sal_range", "temp_range_c", "pO2_min_mbar", "P_range_µmol.kg", "N_range_µmol.kg", "feed_eff_trophic", "PH_sensitivity_taxa", "c_seq", "OA_buff")
+
+for (i in 1:length(listt)){
+  a <- listt[i]
+  print(a)
+  climate_long1 <- climate_long[climate_long$variable !=a, ] #removes the first trait in listt
+  
+  climatelong2 <- climate_long1 %>% pivot_longer(cols = c('low', 'med', 'high', 'vhigh'), names_to = 'level', values_to = 'level_val') %>% ungroup()
+  
+  climatelong2$level_val <- unlist(climatelong2$level_val)
+  
+  print(climatelong2)
+  
+  scores <- climatelong2 %>% group_by(species, level) %>% summarise(score = MYCIN(level_val))
+  
+  #NOW DEFUZZ
+  defuzz<-c(0,25,75,100) #These are the midpoints (the maximum value of membership?) of low, med, high, v high
+
+#shift the dataframe back to long: species, low, high are the columns
+  scores2 <- scores %>% pivot_wider(names_from = level, values_from = score)
+
+#create new index with the low, med, high etc for each species
+  for (i in 1:length(scores2$species)){
+  levels_index <- c(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  sum_memberships <- sum(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  # print(levels_index)
+  # print(sum_memberships)
+  scores2$final[i] <-sum(levels_index*defuzz)/sum_memberships #new column in scores: takes the new index and multiplies it with the defuzz index
+  
+  }
+
+#put the new score in a separate dataframe with columns that say how many traits were removed
+scores2 <- scores2[, c("species", "final")]
+#bind by species
+orig <- merge(orig, scores2, by=c("species"))
+
+#put the missing trait back in! reset
+climate_long <- climate_long
+
+}
+
+#rename columns
+# colnames(scores2)[2] ="final" #rename col?
+colnames(orig)[2] = "climate"
+colnames(orig)[3] = "c-rep_freq_year"
+colnames(orig)[4] = "c-sal_range"
+colnames(orig)[5] = "c-temp_range_c"
+colnames(orig)[6] = "c-pO2_min_mbar"
+colnames(orig)[7] = "c-P_range_µmol.kg"
+colnames(orig)[8] = "c-N_range_µmol.kg"
+colnames(orig)[9] = "c-feed_eff_trophic"
+colnames(orig)[10] = "c-PH_sensitivity_taxa"
+colnames(orig)[11] = "c-c_seq"
+colnames(orig)[12] = "c-OA_buff"
+
+#save this: 
+# NAME<- sprintf("/Users/aleahw/Documents/Master's!!/Fuzzy/jackknife_c_trait_825.csv")
+# write.csv(orig,file=NAME)
+```
+
+```{r}
+#plotting C sensitivity by individual trait
+
+dat <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/jackknife_c_trait_825.csv")
+
+#calculate delta F between each trait and full climate potential score
+dat<-as.data.frame(dat)
+
+dat$delta_c.rep_freq_year <- dat$c.rep_freq_year-dat$climate
+dat$delta_c.sal_range <- dat$c.sal_range-dat$climate
+dat$delta_c.temp_range_c <- dat$c.temp_range_c-dat$climate
+dat$delta_c.pO2_min_mbar <- dat$c.pO2_min_mbar-dat$climate
+dat$delta_c.N_range_µmol.kg <- dat$c.N_range_µmol.kg-dat$climate
+dat$delta_c.P_range_µmol.kg <- dat$c.P_range_µmol.kg-dat$climate
+dat$delta_c.feed_eff_trophic <- dat$c.feed_eff_trophic-dat$climate
+dat$delta_c.PH_sensitivity_taxa <- dat$c.PH_sensitivity_taxa-dat$climate
+dat$delta_c.c_seq <- dat$c.c_seq-dat$climate
+dat$delta_c.OA_buff <- dat$c.OA_buff-dat$climate
+
+dat <- dat[, c(2, 14:23)]
+
+
+dat_long <- dat %>% pivot_longer(!c('species'), names_to = 'trait_removed', values_to = 'score') %>% ungroup()
+
+colnames(dat)
+
+
+# ggplot(dat_long, aes(x = trait_removed, y = score)) +
+#     geom_hline(yintercept=0, linetype="solid",
+#                 color = "black", size=0.3)+
+#     geom_violin(fill = "red3") +
+#     stat_summary(fun.y = median,  geom = "point", color = "black") +
+#     # stat_summary(fun = mean_sdl, geom="pointrange", width=0.2)+
+#     labs(x = "Trait Removed", y = "Δ Climate Change Potential")+
+#     # scale_x_discrete(labels = c("Reproductive Frequency", "Salinity Range", "Temp Range", "pO2 Range", "N Range", "P Range", "Trophic Level (feed efficiency)", "PH Sensitivity", "C Sequestration Potential", "OA Buffering Potential"))+
+#     theme_classic() +
+#     theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+#           axis.title.x = element_text(vjust=20, hjust = 1.4),
+#           text = element_text(size = 15), axis.text = element_text(size = 8),
+#           aspect.ratio = 0.80)
+
+ggplot(dat_long, aes(x = trait_removed, y = score)) +
+    geom_hline(yintercept=0, linetype="solid", color = "black", size=0.3)+
+    geom_violin(fill = "red3")+
+      stat_summary(fun.y = median,  geom = "point", color = "black")+
+
+      # stat_summary(fun = mean_sdl, geom="pointrange", width=0.2)
+
+    labs(x = "Trait Removed", y = "Δ Climate Change Potential") +
+    scale_x_discrete(labels = c("D", "E", "L", "M", "O", "N", "P", "Q", "R", "U"))+
+    theme_classic() +
+    theme(axis.text.x = element_text(size = 18),
+          text = element_text(size = 18), axis.text = element_text(size = 8),
+          aspect.ratio = 0.80,
+          axis.text.y = element_text(size = 15))
+
+#SAVE
+# setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/Figures")
+# ggsave("C_traitsremoved_825.png", plot, height = 5, width = 8, dpi = 700)
+```
+
+```{r}
+#overlay boxplot on violin--find range for 25-75 percentiles
+
+#TEST C: most deviations within 2 index points
+ggplot(dat_long, aes(x = trait_removed, y = score)) +
+    geom_hline(yintercept=0, linetype="solid", color = "lightblue", size=1)+
+    geom_violin(fill = "red")+
+    geom_boxplot(width = 0.2)+
+
+
+    labs(x = "Trait Removed", y = "Δ Climate Change Potential") +
+    scale_x_discrete(labels = c("Reproductive Frequency", "Salinity Range", "Temp Range", "pO2 Range", "N Range", "P Range", "Trophic Level (feed efficiency)", "PH Sensitivity", "C Sequestration Potential", "OA Buffering Potential"))+
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+          axis.title.x = element_text(vjust=20, hjust = 1.4),
+          text = element_text(size = 15), axis.text = element_text(size = 8),
+          aspect.ratio = 0.80)
+# 
+# 
+# setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/Figures")
+# ggsave("C_traits_NEW.png", plot, height = 5, width = 8, dpi = 700)
+```
+
+
+```{r}
+#JACKNIFE biodiv by individual traits
+
+#initialize dataframe with species and original score
+orig <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/biodiv_scores_825.2.csv")
+orig <- orig[, c("species", "final")]
+
+listt <- c("lat_range_degrees", "geog_range_km2", "abs_fecundity", "growth_rate_K", "agg_trophic", "feed_eff_trophic", "bioremed", "structure")
+
+for (i in 1:length(listt)){
+# for (i in 1:7){
+  a <- listt[i]
+  print(a)
+  biodiv_long1 <- biodiv_long[biodiv_long$variable !=a, ] #removes the first trait in listt
+  
+  biodivlong2 <- biodiv_long1 %>% pivot_longer(cols = c('low', 'med', 'high', 'vhigh'), names_to = 'level', values_to = 'level_val') %>% ungroup()
+  
+  biodivlong2$level_val <- unlist(biodivlong2$level_val)
+  
+  print(biodivlong2)
+  
+  scores <- biodivlong2 %>% group_by(species, level) %>% summarise(score = MYCIN(level_val))
+  
+  #NOW DEFUZZ
+  defuzz<-c(0,25,75,100) #These are the midpoints (the maximum value of membership?) of low, med, high, v high
+
+#shift the dataframe back to long: species, low, high are the columns
+  scores2 <- scores %>% pivot_wider(names_from = level, values_from = score)
+
+#create new index with the low, med, high etc for each species
+  for (i in 1:length(scores2$species)){
+  levels_index <- c(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  sum_memberships <- sum(scores2$low[i], scores2$med[i], scores2$high[i], scores2$vhigh[i])
+  # print(levels_index)
+  # print(sum_memberships)
+  scores2$final[i] <-sum(levels_index*defuzz)/sum_memberships #new column in scores: takes the new index and multiplies it with the defuzz index
+  
+  }
+
+#put the new score in a separate dataframe with columns that say how many traits were removed
+scores2 <- scores2[, c("species", "final")]
+#bind by species
+orig <- merge(orig, scores2, by=c("species"))
+
+
+#put the missing trait back in! reset
+biodiv_long <- biodiv_long
+
+}
+
+#rename columns
+# colnames(scores2)[2] ="final" #rename col?
+colnames(orig)[2] = "biodiv"
+colnames(orig)[3] = "b-lat_range_degrees"
+colnames(orig)[4] = "b-geog_range_km2"
+colnames(orig)[5] = "b-abs_fecundity"
+colnames(orig)[6] = "b-growth_rate_K"
+colnames(orig)[7] = "b-agg_trophic"
+colnames(orig)[8] = "b-feed_eff_trophic"
+colnames(orig)[9] = "b-bioremed"
+colnames(orig)[10] = "b-structure"
+
+#save this: 
+NAME<- sprintf("/Users/aleahw/Documents/Master's!!/Fuzzy/jackknife_b_trait_825.csv")
+write.csv(orig,file=NAME)
+```
+
+
+```{r}
+#plotting B sensitivity by individual trait
+
+dat <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/jackknife_b_trait_825.csv")
+
+#calculate delta F between each trait and full biodiv potential score
+dat<-as.data.frame(dat)
+
+dat$delta_b.lat_range_degrees <- dat$b.lat_range_degrees-dat$biodiv
+dat$delta_b.geog_range_km2 <- dat$b.geog_range_km2-dat$biodiv
+dat$delta_b.abs_fecundity <- dat$b.abs_fecundity-dat$biodiv
+dat$delta_b.growth_rate_K <- dat$b.growth_rate_K-dat$biodiv
+dat$delta_b.agg_trophic <- dat$b.agg_trophic-dat$biodiv
+dat$delta_b.feed_eff_trophic <- dat$b.feed_eff_trophic-dat$biodiv
+dat$delta_b.bioremed <- dat$b.bioremed-dat$biodiv
+dat$delta_b.structure <- dat$b.structure-dat$biodiv
+
+dat <- dat[, c(2, 12:19)]
+
+
+dat_long <- dat %>% pivot_longer(!c('species'), names_to = 'trait_removed', values_to = 'score') %>% ungroup()
+
+
+#HORIZONTAL
+# plot <- ggplot(dat_long, aes(x = trait_removed, y = score)) +
+#     geom_hline(yintercept=0, linetype="solid",
+#                 color = "black", size = 0.3)+
+#     geom_violin(fill = "red3") +
+#     coord_flip()+
+#     stat_summary(fun.y = median,  geom = "point", color = "black")+
+#     labs(x = "", y = "Δ Biodiversity Potential", title = "Trait Removed")+
+#     scale_x_discrete(labels = c("Structural Provisioning Potential", "Latitudinal Range", "VBGF K", "Water Area", "Feed Efficiency (Trophic Level)", "Bioremediation Potential", "Aggression (Trophic Level)", "Absolute Fecundity"))+
+#     theme_classic()+
+#     theme(plot.title = element_text(face = "bold", size = 15, hjust = -0.38, vjust = -3),
+#           text = element_text(size = 13), axis.title.x = element_text(face = "bold", size =15))
+
+plot <- ggplot(dat_long, aes(x = trait_removed, y = score)) +
+    geom_hline(yintercept=0, linetype="solid", color = "black", size=0.3)+
+    geom_violin(fill = "red3")+
+      stat_summary(fun.y = median,  geom = "point", color = "black")+
+
+      # stat_summary(fun = mean_sdl, geom="pointrange", width=0.2)
+
+    labs(x = "Trait Removed", y = "Δ Biodiversity Potential")+
+
+    scale_x_discrete(labels = c("A", "B", "C", "E", "F", "G", "H", "T"))+
+    theme_classic() +
+    theme(axis.text.x = element_text(size= 18),
+          text = element_text(size = 20), axis.text = element_text(size = 8),
+          aspect.ratio = 0.80,
+          axis.text.y = element_text(size = 15))
+
+#SAVE
+# setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/Figures")
+# ggsave("B_traitsremoved_825.png", plot, height = 5, width = 8, dpi = 700)
+```
+
+```{r}
+#overlay boxplot on violin--find range for 25-75 percentiles
+
+#TEST B: most deviations within __ index points
+ggplot(dat_long, aes(x = trait_removed, y = score)) +
+    geom_hline(yintercept=0, linetype="solid", color = "lightblue", size=1)+
+    geom_violin(fill = "red")+
+    geom_boxplot(width = 0.2)+
+
+
+    labs(x = "Trait Removed", y = "Δ Biodiversity Potential") +
+    scale_x_discrete(labels = c("Reproductive Frequency", "Salinity Range", "Temp Range", "pO2 Range", "N Range", "P Range", "Trophic Level (feed efficiency)", "PH Sensitivity", "C Sequestration Potential", "OA Buffering Potential"))+
+    theme_classic() + 
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1), 
+          axis.title.x = element_text(vjust=20, hjust = 1.4),
+          text = element_text(size = 15), axis.text = element_text(size = 8), 
+          aspect.ratio = 0.80)
+
+
+# setwd("/Users/aleahw/Documents/Master's!!/Fuzzy/Figures")
+# ggsave("B_traits_NEW.png", plot, height = 5, width = 8, dpi = 700)
+```
+
+CHECKING FOR CORRELATION
+```{r}
+speciesdata <- read.csv("/Users/aleahw/Documents/Master's!!/Fuzzy/FCB_scores_825.2.csv")
+
+library("ggpubr")
+library(ggplot2)
+
+# Do the data from each of the 2 variables (x, y) follow a normal distribution?
+# Use Shapiro-Wilk normality test –> R function: shapiro.test()
+# and look at the normality plot —> R function: ggpubr::ggqqplot()
+
+# Shapiro-Wilk test can be performed as follow:
+# Null hypothesis: the data are normally distributed
+# Alternative hypothesis: the data are not normally distributed
+
+# Shapiro-Wilk normality test for f
+shapiro.test(speciesdata$f) # => p = 0.00916 NOT NORMAL
+# Shapiro-Wilk normality test for c
+shapiro.test(speciesdata$c) # => p = 0.4458 NORMAL
+# Shapiro-Wilk normality test for b
+shapiro.test(speciesdata$b) # => p = 0.006199 NOT NORMAL (sig diff from normal dist)
+
+# Visual inspection of the data normality using Q-Q plots (quantile-quantile plots). Q-Q plot draws the correlation between a given sample and the normal distribution.
+
+ggqqplot(speciesdata$f, ylab = "Food Security")
+ggqqplot(speciesdata$c, ylab = "Climate Change")
+ggqqplot(speciesdata$b, ylab = "Biodiversity")
+
+#histogram to see dist
+ggdensity(speciesdata$f, 
+          main = "Density plot of F index",
+          xlab = "Food Security Index")
+
+ggdensity(speciesdata$c, 
+          main = "Density plot of C index",
+          xlab = "Climate Change Index")
+
+ggdensity(speciesdata$b, 
+          main = "Density plot of B index",
+          xlab = "Biodiversity Index")
+
+
+#PEARSON, assuming normal distribution...
+#FOOD SECURITY AND CLIMATE CHANGE
+ggscatter(speciesdata, x = "f", y = "c", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Food Security Index", ylab = "Climate Change Index") #SIGNIFICANT, R = 0.48; p = 0.0001504
+
+res <- cor.test(speciesdata$f, speciesdata$c, 
+                    method = "pearson")
+res
+
+#FOOD SECURITY AND BIODIVERSITY
+ggscatter(speciesdata, x = "f", y = "b", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Food Security Index", ylab = "Biodiversity Index") #SIGNIFICANT, R = 0.44; p = 0.0005818
+
+res <- cor.test(speciesdata$f, speciesdata$b, 
+                    method = "pearson")
+res
+
+#BIODIVERSITY AND CLIMATE CHANGE
+ggscatter(speciesdata, x = "c", y = "b", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Climate Change Index", ylab = "Biodiversity Index") #SIGNIFICANT, R = 0.48; p = 0.000145
+
+res <- cor.test(speciesdata$c, speciesdata$b, 
+                    method = "pearson")
+res
+
+#Spearman rank correlation, assuming non-normal dist
+# The Kendall rank correlation coefficient or Kendall’s tau statistic is used to estimate a rank-based measure of association. This test may be used if the data do not necessarily come from a bivariate normal distribution.
+
+res2 <- cor.test(speciesdata$f, speciesdata$c,  method="kendall") #SIG; tau = 0.4411673 , p-value = 1.299e-06
+res2
+
+res2 <- cor.test(speciesdata$f, speciesdata$b,  method="kendall") #SIG; tau = 0.377003 ; p-value = 3.608e-05
+res2
+
+res2 <- cor.test(speciesdata$c, speciesdata$b,  method="kendall") #SIG; tau = 0.2826635 ; p-value = 0.001946
+res2
+
+```
+
