@@ -1,0 +1,58 @@
+﻿,species,common_name,category,thousand_tons_2020,f,c,b,rank_F,rank_C,rank_B,average_score
+44,Porphyra yezoensis,Nori (yezoensis),algae,2220.2,61.17750538,64.40601716,66.80720279,1,3,9,64.08855778
+18,Laminaria japonica,Japanese kelp,algae,12469.8,56.18433186,68.36779459,65.51812911,11,1,15,63.13585889
+12,Eucheuma denticulatum,Spiny eucheuma,algae,154.1,51.35267728,67.77443923,63.89156086,23,2,17,60.58393908
+42,Porphrya tenera,Nori (tenera),algae,2220.2,56.81003744,56.59961697,66.13130256,8,5,12,59.68729283
+48,Sargassum fusiforme,Fusiform sargassum,algae,292.9,54.10591003,57.82500705,66.88702673,17,4,6,59.37005216
+11,Eucheuma cottonii,Elkhorn sea moss,algae,8129.4,56.91524398,54.6425591,66.85220355,4.5,7,7.5,59.24137361
+16,Kappaphycus alvarezii,Elkhorn sea moss,algae,1604.1,56.91524398,54.00285784,66.85220355,4.5,9,7.5,59.00928567
+43,Porphyra haitanensis,Nori (haitanensis),algae,2220.2,56.89282116,50.67165678,66.0003222,6,12,13,57.51611498
+13,Gracilaria gracilis,Ogonori,algae,5180.4,52.8382388,54.20412195,65.94268339,19,8,14,57.37408259
+57,Undaria pinnatifida,Wakame,algae,2810.6,50.60120645,47.99890198,66.80315048,29,20,10,54.54183011
+22,Macrobrachium nipponense,Oriental river prawn,crustacean,228.8,53.88699851,37.83785572,53.73592376,18,46,25,47.8510799
+10,Eriocheir sinensis,Chinese mitten crab,crustacean,775.9,42.93059162,47.84155789,51.65159876,51,21,29,47.33895338
+23,Macrobrachium rosenbergii,Giant river prawn,crustacean,294,45.99944785,30.96449409,60.15542166,45,53,19,44.08563773
+40,Penaeus vannamei,Whiteleg shrimp,crustacean,5812.2,50.80024751,27.95737681,56.37993515,27,57,21,43.10181978
+50,Scylla paramamosain,Green mud crab,crustacean,159.4,55.97097495,31.87539176,44.71617156,12,52,44,43.04879561
+45,Procambarus clarkii,Red swamp crayfish,crustacean,2469,33.57012292,35.45358929,53.55219111,56,50,26,39.94509532
+39,Penaeus monodon,Giant tiger prawn,crustacean,717.1,43.18923718,33.31625334,33.34027823,50,51,53,36.3357088
+51,Scylla serrata,Indo-Pacific swamp crab,crustacean,248.8,45.65269459,30.64707541,31.89528832,47,54,56,35.46995699
+15,Hypophthalmichthys nobilis,Bighead carp,finfish_inland,3187.2,55.61157536,51.90760566,54.71563975,13,11,23,54.05500253
+14,Hypophthalmichthys molitrix,Silver carp,finfish_inland,4896.6,55.44124495,51.91572806,48.99862436,14,10,36,52.0521417
+6,Ctenopharyngodon idellus,Grass carp,finfish_inland,5791.5,51.48982788,49.18783384,53.99605427,22,13,24,51.52053777
+17,Labeo rohita,Roho labeo,finfish_inland,2484.8,52.48769373,43.27342048,55.02783318,20,36,22,49.99812398
+36,Oreochromis niloticus,Nile tilapia,finfish_inland,4407.2,49.55055604,47.20598545,49.81061755,36.5,24.5,32.5,48.84152049
+34,Oncorhynchus mykiss,Rainbow trout,finfish_inland,739.5,49.80852536,48.32353267,48.21978943,34.5,16.5,37.5,48.77858783
+29,Mylopharyngodon piceus,Black carp,finfish_inland,695.5,51.21800519,48.09121632,45.57237794,25,19,41,48.23882313
+2,Catla catla,Catla,finfish_inland,3540.3,51.19168552,43.2969947,47.7099969,26,35,40,47.28849837
+1,Carassius carassius,Crucian carp,finfish_inland,2748.6,47.62712699,48.33163086,44.95400482,39,15,43,46.94810573
+38,Pangasianodon hypophthalmus,Striped catfish,finfish_inland,2520.4,47.02500155,40.71104599,52.08616576,43,43,28,46.37185715
+7,Cyprinus carpio,Common carp,finfish_inland,4236.3,50.19701389,54.64801558,32.05476331,32,6,55,44.46807039
+26,Micropterus salmoides,Largemouth black bass,finfish_inland,621.3,47.43694031,41.33582063,43.78829998,41,40,46,44.11643794
+4,Clarias gariepinus,African sharptooth catfish,finfish_inland,1249,45.90493216,40.06380446,45.26832713,46,45,42,43.66518733
+25,Megalobrama amblycephala,Wuchang bream,finfish_inland,781.7,30.17490492,37.49846837,49.25521351,57,47,35,38.19770015
+3,Chanos chanos,Milkfish,finfish_marine,1167.8,56.62634187,47.69592547,44.14255108,9,23,45,49.21744579
+37,Oreochromis niloticus,Nile tilapia,finfish_marine,107.4,49.55055604,47.20598545,49.81061755,36.5,24.5,32.5,48.84152049
+35,Oncorhynchus mykiss,Rainbow trout,finfish_marine,220.1,49.80852536,48.32353267,48.21978943,34.5,16.5,37.5,48.77858783
+52,Seriola quinqueradiata,Japanese amberjack,finfish_marine,137.1,48.09102329,40.71727614,50.10255265,38,42,30,46.12122808
+19,Larimichthys croceus,Large yellow croaker,finfish_marine,254.1,45.28508965,41.20081743,49.68325792,48,41,34,45.25748091
+20,Lateolabrax japonicus,Japanese seabass,finfish_marine,196.9,50.77532958,45.30415764,40.08544338,28,28,47,45.17787861
+28,Mugil cephalus,Flathead grey mullet,finfish_marine,291.2,56.82020854,43.99125492,33.90852372,7,34,52,43.92644115
+8,Dicentrarchus labrax,European seabass,finfish_marine,243.9,39.31512198,42.4590189,50,54,37,31,43.70185404
+33,Oncorhynchus kisutch,Coho salmon,finfish_marine,221.9,42.62521691,40.1214905,47.85715194,52,44,39,43.41736907
+56,Trachinotus ovatus,Pompano,finfish_marine,160,41.89710505,44.28121392,39.33174227,53,33,50,41.78774214
+47,Salmo salar,Atlantic salmon,finfish_marine,2719.6,47.61621664,44.94740645,33.9902911,40,32,51,41.74503238
+9,Epinephelus coioides,Orange-spotted grouper,finfish_marine,226.2,43.5897733,37.48172526,39.75117399,49,48,48,40.1961737
+54,Sparus aurata,Gilthead seabream,finfish_marine,282.1,37.43430851,35.96913604,39.5681647,55,49,49,37.62835588
+49,Sciaenops ocellatus,Red drum,finfish_marine,84.3,47.34633434,29.56012804,32.08010916,42,55,54,35.54207969
+21,Lates calcarifer,Barramundi or Giant seaperch,finfish_marine,105.8,46.97095345,29.2007248,31.09583521,44,56,57,34.9388343
+30,Mytilus chilensis,Chilean mussel,mollusc,399.1,56.29267705,48.25409505,71.3033954,10,18,3,57.8582681
+46,Ruditapes philippinarum,Japanese carpet shell,mollusc,4266.2,57.88704796,47.00036883,66.63633449,3,26,11,56.59758791
+27,Mizuhopecten yessoensis,Yesso scallop or giant Ezo scallop,mollusc,1746.4,58.30392169,47.78964917,64.76190476,2,22,16,56.50892877
+32,Mytilus galloprovincialis,Mediterranean mussel,mollusc,1108.3,51.32259977,48.68530992,71.57183428,24,14,1,56.33992244
+53,Sinonovacula constricta,Constricted tagelus,mollusc,860.3,54.36742791,45.28628222,71.3033954,16,29,3,55.9936213
+41,Perna canaliculus,New Zealand green-lipped mussel,mollusc,1108.3,51.58490862,41.81033949,71.3033954,21,39,3,53.57623491
+55,Tegillarca granosa,Blood cockle,mollusc,457.9,54.4298726,45.03439834,59.15098616,15,31,20,52.53489768
+5,Crassostrea virginica,Eastern oyster,mollusc,5450.3,50.59679163,41.91510253,67.66456026,30,38,5,52.35420773
+31,Mytilus edulis,Blue mussel,mollusc,1108.3,50.18728277,46.49432046,60.94367306,33,27,18,52.19642248
+24,Magallana gigas,Pacific cupped oyster,mollusc,610.3,50.39288953,45.03485946,53.42209351,31,30,27,49.49329018
